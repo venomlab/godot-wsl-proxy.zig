@@ -88,14 +88,24 @@ pub fn build(b: *std.Build) !void {
                 },
             },
         });
+        const tar_gz_file = try std.fmt.allocPrint(b.allocator, "{s}-{s}.tar.gz", .{ exe_name, install_dir });
         const tar_gz_tool = b.addSystemCommand(&.{"tar"});
+        tar_gz_tool.setCwd(std.Build.LazyPath{ .cwd_relative = b.getInstallPath(target_output.dest_dir.?, "") });
         tar_gz_tool.addArg("-czf");
-        const archive_name = b.getInstallPath(target_output.dest_dir.?, try std.fmt.allocPrint(b.allocator, "{s}-{s}.tar.gz", .{ exe_name, install_dir }));
-        tar_gz_tool.addArg(archive_name);
-        tar_gz_tool.addArg("-C");
-        tar_gz_tool.addArg(b.getInstallPath(target_output.dest_dir.?, ""));
+        tar_gz_tool.addArg(tar_gz_file);
         tar_gz_tool.addArg(exe_name);
+
+        const sha256_file = try std.fmt.allocPrint(b.allocator, "{s}.sha256", .{tar_gz_file});
+        const sha256_tool = b.addSystemCommand(&.{"sha256sum"});
+        sha256_tool.setCwd(std.Build.LazyPath{ .cwd_relative = b.getInstallPath(target_output.dest_dir.?, "") });
+        sha256_tool.addArg("-b");
+        sha256_tool.addArg(tar_gz_file);
+        const sha256_save = b.addInstallFileWithDir(sha256_tool.captureStdOut(), target_output.dest_dir.?, sha256_file);
+
         tar_gz_tool.step.dependOn(&target_output.step);
-        release_step.dependOn(&tar_gz_tool.step);
+        sha256_tool.step.dependOn(&tar_gz_tool.step);
+        sha256_save.step.dependOn(&sha256_tool.step);
+
+        release_step.dependOn(&sha256_save.step);
     }
 }
