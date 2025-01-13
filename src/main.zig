@@ -1,6 +1,6 @@
 const std = @import("std");
 pub const std_options = .{
-    .log_level = .warn,
+    .log_level = .info,
 };
 
 const config = struct {
@@ -51,7 +51,11 @@ const Request = struct {
 
     pub fn log(self: Self, prefix: []const u8) void {
         if (self.data) |data| {
-            std.log.debug("{s}: length={d}; data={s}\n", .{ prefix, data.len, data });
+            std.log.info("{s}: length={d}\n", .{ prefix, data.len });
+            if (data.len < 256) {
+                std.log.info("content: {s}", .{data});
+            }
+            std.log.debug("content: {s}", .{data});
         }
     }
 };
@@ -71,6 +75,7 @@ pub fn main() !void {
     const lsp_writer = lsp_socket.writer().any();
 
     request_cycle: while (true) {
+        std.log.info("ATTEMPT TO RECEIVE CLIENT MESSAGE", .{});
         const clientReqOpt = try readRequest(allocator, client_reader);
         if (clientReqOpt != null) {
             var request: Request = clientReqOpt.?;
@@ -78,12 +83,16 @@ pub fn main() !void {
             if (request.data) |data| {
                 const new_data = try convertLinuxToWindows(allocator, data);
                 try request.setNewData(new_data);
-                request.log("CLIENT PROCESSED REQUEST");
             }
+            request.log("SENDING TO LSP");
             try writeRequest(request, lsp_writer);
             request.deinit();
-        } else break :request_cycle;
+        } else {
+            std.log.warn("Cannot receive request from client\n", .{});
+            break :request_cycle;
+        }
 
+        std.log.info("ATTEMPT TO RECEIVE LSP MESSAGE", .{});
         const lspResponseOpt = try readRequest(allocator, lsp_reader);
         if (lspResponseOpt != null) {
             var request: Request = lspResponseOpt.?;
@@ -91,11 +100,14 @@ pub fn main() !void {
             if (request.data) |data| {
                 const new_data = try convertWindowsToLinux(allocator, data);
                 try request.setNewData(new_data);
-                request.log("LSP PROCESSED RESPONSE");
             }
+            request.log("SENDING TO CLIENT");
             try writeRequest(request, client_writer);
             request.deinit();
-        } else break :request_cycle;
+        } else {
+            std.log.warn("Cannot receive response from LSP\n", .{});
+            break :request_cycle;
+        }
     }
 }
 
@@ -197,10 +209,14 @@ fn convertWindowsToLinux(allocator: std.mem.Allocator, data: []u8) ![]u8 {
 
 fn writeRequest(request: Request, writer: std.io.AnyWriter) !void {
     for (request.headers.items) |header| {
-        try writer.writeAll(header);
+        try writer.print("{s}\r\n", .{header});
     }
-    try writer.print("Content-Length: {d}\r\n\r\n", .{request.data.?.len});
-    try writer.writeAll(request.data.?);
+    if (request.data) |data| {
+        try writer.print("Content-Length: {d}\r\n\r\n", .{data.len});
+        try writer.writeAll(data);
+    } else {
+        try writer.print("Content-Length: 0\r\n\r\n", .{});
+    }
 }
 
 fn readRequest(allocator: std.mem.Allocator, reader: std.io.AnyReader) !?Request {
@@ -211,19 +227,15 @@ fn readRequest(allocator: std.mem.Allocator, reader: std.io.AnyReader) !?Request
         var buffer = ByteArrayList.init(allocator);
         try reader.streamUntilDelimiter(buffer.writer(), '\n', null);
         const rawData = try buffer.toOwnedSlice();
-        var data: []u8 = undefined;
-        if (std.mem.endsWith(u8, rawData, "\r")) {
-            data = try allocator.dupe(u8, rawData[0 .. rawData.len - 1]);
-            allocator.free(rawData);
-        } else {
-            data = rawData;
-        }
+        const trimData = std.mem.trim(u8, rawData, &std.ascii.whitespace);
+        const data = try allocator.dupe(u8, trimData);
+        allocator.free(rawData);
         if (data.len == 0) {
             break;
         }
-        if (std.ascii.startsWithIgnoreCase(data, "Content-Length: ")) {
+        if (std.ascii.startsWithIgnoreCase(data, "Content-Length:")) {
             defer allocator.free(data);
-            content_length = try std.fmt.parseInt(usize, data[16..], 10);
+            content_length = try std.fmt.parseInt(usize, std.mem.trim(u8, data[15..], &std.ascii.whitespace), 10);
         } else {
             try request.addHeader(data);
         }
