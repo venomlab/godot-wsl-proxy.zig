@@ -15,8 +15,8 @@ This project is inspired by [godot-wsl-lsp](https://github.com/lucasecdb/godot-w
 Download the binary distributtion and SHA256 checksum
 
 ```shell
-wget "https://github.com/venomlab/godot-wsl-proxy.zig/releases/download/latest/godot-wsl-proxy-$(uname -m)-$(uname -s | tr '[:upper:]' '[:lower:]').tar.gz"
-wget "https://github.com/venomlab/godot-wsl-proxy.zig/releases/download/latest/godot-wsl-proxy-$(uname -m)-$(uname -s | tr '[:upper:]' '[:lower:]').tar.gz.sha256"
+wget "https://github.com/venomlab/godot-wsl-proxy.zig/releases/latest/download/godot-wsl-proxy-$(uname -m)-$(uname -s | tr '[:upper:]' '[:lower:]').tar.gz"
+wget "https://github.com/venomlab/godot-wsl-proxy.zig/releases/latest/download/godot-wsl-proxy-$(uname -m)-$(uname -s | tr '[:upper:]' '[:lower:]').tar.gz.sha256"
 ```
 
 Validate the checksum
