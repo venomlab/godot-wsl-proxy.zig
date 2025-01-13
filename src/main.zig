@@ -86,51 +86,64 @@ pub fn main() !void {
         }
         if (res > 0) {
             if (fds[0].revents > 0) {
-                // LSP ready to send response
-                std.log.info("ATTEMPT TO RECEIVE LSP MESSAGE", .{});
-                const lspResponseOpt = try readRequest(allocator, lsp_reader);
-                if (lspResponseOpt != null) {
-                    var request: Request = lspResponseOpt.?;
-                    request.log("LSP RAW RESPONSE");
-                    if (request.data) |data| {
-                        const new_data = try convertWindowsToLinux(allocator, data);
-                        try request.setNewData(new_data);
-                    }
-                    request.log("SENDING TO CLIENT");
-                    try writeRequest(request, client_writer);
-                    request.deinit();
-                } else {
-                    std.log.warn("Cannot receive response from LSP\n", .{});
-                    break;
-                }
+                if (!try handleLspResponse(allocator, lsp_reader, client_writer)) break;
             }
             if (fds[1].revents > 0) {
-                // Client ready to send request
-                std.log.info("ATTEMPT TO RECEIVE CLIENT MESSAGE", .{});
-                const clientReqOpt = try readRequest(allocator, client_reader);
-                if (clientReqOpt != null) {
-                    var request: Request = clientReqOpt.?;
-                    request.log("CLIENT RAW REQUEST");
-                    if (request.data) |data| {
-                        const new_data = try convertLinuxToWindows(allocator, data);
-                        try request.setNewData(new_data);
-                    }
-                    request.log("SENDING TO LSP");
-                    try writeRequest(request, lsp_writer);
-                    request.deinit();
-                } else {
-                    std.log.warn("Cannot receive request from client\n", .{});
-                    break;
-                }
+                if (!try handleClientRequest(allocator, client_reader, lsp_writer)) break;
             }
         }
         fds[0].revents = 0;
         fds[1].revents = 0;
     }
 }
+fn handleClientRequest(allocator: std.mem.Allocator, client_reader: std.io.AnyReader, lsp_writer: std.io.AnyWriter) !bool {
+    var arena_allocator = std.heap.ArenaAllocator.init(allocator);
+    defer arena_allocator.deinit();
+    const arena = arena_allocator.allocator();
 
-fn convertLinuxToWindows(allocator: std.mem.Allocator, data: []u8) ![]u8 {
-    var buffer = ByteArrayList.init(allocator);
+    std.log.info("ATTEMPT TO RECEIVE CLIENT MESSAGE", .{});
+    const clientReqOpt = try readRequest(arena, client_reader);
+    if (clientReqOpt != null) {
+        var request: Request = clientReqOpt.?;
+        request.log("CLIENT RAW REQUEST");
+        if (request.data) |data| {
+            const new_data = try convertLinuxToWindows(arena, data);
+            try request.setNewData(new_data);
+        }
+        request.log("SENDING TO LSP");
+        try writeRequest(request, lsp_writer);
+    } else {
+        std.log.warn("Cannot receive request from client\n", .{});
+        return false;
+    }
+    return true;
+}
+
+fn handleLspResponse(allocator: std.mem.Allocator, lsp_reader: std.io.AnyReader, client_writer: std.io.AnyWriter) !bool {
+    var arena_allocator = std.heap.ArenaAllocator.init(allocator);
+    defer arena_allocator.deinit();
+    const arena = arena_allocator.allocator();
+
+    std.log.info("ATTEMPT TO RECEIVE LSP MESSAGE", .{});
+    const lspResponseOpt = try readRequest(arena, lsp_reader);
+    if (lspResponseOpt != null) {
+        var request: Request = lspResponseOpt.?;
+        request.log("LSP RAW RESPONSE");
+        if (request.data) |data| {
+            const new_data = try convertWindowsToLinux(arena, data);
+            try request.setNewData(new_data);
+        }
+        request.log("SENDING TO CLIENT");
+        try writeRequest(request, client_writer);
+    } else {
+        std.log.warn("Cannot receive response from LSP\n", .{});
+        return false;
+    }
+    return true;
+}
+
+fn convertLinuxToWindows(arena: std.mem.Allocator, data: []u8) ![]u8 {
+    var buffer = ByteArrayList.init(arena);
     var start_index: usize = 0;
     while (std.mem.indexOfPos(u8, data, start_index, "\"\\/mnt\\/")) |start| {
         if (std.mem.indexOfPos(u8, data, start + 1, "\"")) |end| {
@@ -142,9 +155,8 @@ fn convertLinuxToWindows(allocator: std.mem.Allocator, data: []u8) ![]u8 {
             var tokenizer = std.mem.tokenizeSequence(u8, interesting_slice, "\\/");
             _ = tokenizer.next(); // Skip /mnt part
             const drive_letter = tokenizer.next().?;
-            const upper_letter = try std.ascii.allocUpperString(allocator, drive_letter);
+            const upper_letter = try std.ascii.allocUpperString(arena, drive_letter);
             try buffer.appendSlice(upper_letter);
-            allocator.free(upper_letter);
             try buffer.append(':');
             while (tokenizer.next()) |part| {
                 try buffer.append('/');
@@ -154,7 +166,6 @@ fn convertLinuxToWindows(allocator: std.mem.Allocator, data: []u8) ![]u8 {
     }
     try buffer.appendSlice(data[start_index..data.len]);
     const tmp_data = try buffer.toOwnedSlice();
-    defer allocator.free(tmp_data);
     start_index = 0;
     while (std.mem.indexOfPos(u8, tmp_data, start_index, "\"file:\\/\\/\\/mnt\\/")) |start| {
         if (std.mem.indexOfPos(u8, tmp_data, start + 1, "\"")) |end| {
@@ -169,9 +180,8 @@ fn convertLinuxToWindows(allocator: std.mem.Allocator, data: []u8) ![]u8 {
             try buffer.appendSlice("///");
             _ = tokenizer.next(); // Skip /mnt part
             const drive_letter = tokenizer.next().?;
-            const upper_letter = try std.ascii.allocUpperString(allocator, drive_letter);
+            const upper_letter = try std.ascii.allocUpperString(arena, drive_letter);
             try buffer.appendSlice(upper_letter);
-            allocator.free(upper_letter);
             try buffer.append(':');
             while (tokenizer.next()) |part| {
                 try buffer.append('/');
@@ -237,22 +247,19 @@ fn writeRequest(request: Request, writer: std.io.AnyWriter) !void {
     }
 }
 
-fn readRequest(allocator: std.mem.Allocator, reader: std.io.AnyReader) !?Request {
-    var request = Request.init(allocator);
-    errdefer request.deinit();
+fn readRequest(arena: std.mem.Allocator, reader: std.io.AnyReader) !?Request {
+    var request = Request.init(arena);
     var content_length: ?usize = null;
     while (true) {
-        var buffer = ByteArrayList.init(allocator);
+        var buffer = ByteArrayList.init(arena);
         try reader.streamUntilDelimiter(buffer.writer(), '\n', null);
         const rawData = try buffer.toOwnedSlice();
         const trimData = std.mem.trim(u8, rawData, &std.ascii.whitespace);
-        const data = try allocator.dupe(u8, trimData);
-        allocator.free(rawData);
+        const data = try arena.dupe(u8, trimData);
         if (data.len == 0) {
             break;
         }
         if (std.ascii.startsWithIgnoreCase(data, "Content-Length:")) {
-            defer allocator.free(data);
             content_length = try std.fmt.parseInt(usize, std.mem.trim(u8, data[15..], &std.ascii.whitespace), 10);
         } else {
             try request.addHeader(data);
@@ -262,7 +269,7 @@ fn readRequest(allocator: std.mem.Allocator, reader: std.io.AnyReader) !?Request
         return Errors.NoContentLength;
     }
     const length = content_length.?;
-    const data = try allocator.alloc(u8, length);
+    const data = try arena.alloc(u8, length);
     const size = try reader.readAtLeast(data, length);
     request.data = data;
     if (size < length) {
@@ -276,38 +283,48 @@ test "Simple Request Reading" {
     const requestData = "Content-Type: application/json\r\nContent-Length: 23\r\n\r\n{\"qwerty\": \"something\"}";
     var requestStream = RequestStream{ .buffer = requestData, .pos = 0 };
     const requestReader = requestStream.reader().any();
-    const maybeRequest = try readRequest(allocator, requestReader);
+    var arena_allocator = std.heap.ArenaAllocator.init(allocator);
+    defer arena_allocator.deinit();
+    const arena = arena_allocator.allocator();
+    const maybeRequest = try readRequest(arena, requestReader);
     const request = maybeRequest.?;
-    defer request.deinit();
     try std.testing.expectEqual(1, request.headers.items.len);
     try std.testing.expectEqual(23, request.data.?.len);
     try std.testing.expectEqualStrings("{\"qwerty\": \"something\"}", request.data.?);
 }
+
 test "Simple Linux to Windows Paths/Uri Conversion" {
     const allocator = std.testing.allocator;
     const data = "{\"file\": \"\\/mnt\\/c\\/Users\\/test\\/projects\\/godot\\/test_project\\/\", \"uri\": \"file:\\/\\/\\/mnt\\/c\\/Users\\/test\\/projects\\/godot\\/test_project\\/character.gd\"}";
     const expected_data = "{\"file\": \"C:/Users/test/projects/godot/test_project/\", \"uri\": \"file:///C:/Users/test/projects/godot/test_project/character.gd\"}";
     const request_data = std.fmt.comptimePrint("Content-Length: {d}\r\n\r\n{s}", .{ data.len, data });
+    const response_data = std.fmt.comptimePrint("Content-Length: {d}\r\n\r\n{s}", .{ expected_data.len, expected_data });
     var request_stream = RequestStream{ .buffer = request_data, .pos = 0 };
     const request_reader = request_stream.reader().any();
-    const maybe_request = try readRequest(allocator, request_reader);
-    const request = maybe_request.?;
-    const new_data = try convertLinuxToWindows(allocator, request.data.?);
-    defer allocator.free(new_data);
-    defer request.deinit();
-    try std.testing.expectEqualStrings(expected_data, new_data);
+    var response_buffer = ByteArrayList.init(allocator);
+    defer response_buffer.deinit();
+    const response_writer = response_buffer.writer().any();
+    const res = try handleClientRequest(allocator, request_reader, response_writer);
+    try std.testing.expect(res);
+    const actual_data = try response_buffer.toOwnedSlice();
+    defer allocator.free(actual_data);
+    try std.testing.expectEqualStrings(response_data, actual_data);
 }
+
 test "Simple Windows to Linux Paths/Uri Conversion" {
     const allocator = std.testing.allocator;
     const data = "{\"file\": \"C:/Users/test/projects/godot/test_project/\", \"uri\": \"file:///C:/Users/test/projects/godot/test_project/character.gd\"}";
     const expected_data = "{\"file\": \"/mnt/c/Users/test/projects/godot/test_project/\", \"uri\": \"file:///mnt/c/Users/test/projects/godot/test_project/character.gd\"}";
     const request_data = std.fmt.comptimePrint("Content-Length: {d}\r\n\r\n{s}", .{ data.len, data });
+    const response_data = std.fmt.comptimePrint("Content-Length: {d}\r\n\r\n{s}", .{ expected_data.len, expected_data });
     var request_stream = RequestStream{ .buffer = request_data, .pos = 0 };
     const request_reader = request_stream.reader().any();
-    const maybe_request = try readRequest(allocator, request_reader);
-    const request = maybe_request.?;
-    const new_data = try convertWindowsToLinux(allocator, request.data.?);
-    defer allocator.free(new_data);
-    defer request.deinit();
-    try std.testing.expectEqualStrings(expected_data, new_data);
+    var response_buffer = ByteArrayList.init(allocator);
+    defer response_buffer.deinit();
+    const response_writer = response_buffer.writer().any();
+    const res = try handleLspResponse(allocator, request_reader, response_writer);
+    try std.testing.expect(res);
+    const actual_data = try response_buffer.toOwnedSlice();
+    defer allocator.free(actual_data);
+    try std.testing.expectEqualStrings(response_data, actual_data);
 }
