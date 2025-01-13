@@ -69,7 +69,7 @@ pub fn main() !void {
     const client_reader = std.io.getStdIn().reader().any();
     const client_writer = std.io.getStdOut().writer().any();
 
-    const lsp_socket = try std.net.tcpConnectToHost(allocator, "localhost", 6005);
+    const lsp_socket = try std.net.tcpConnectToHost(allocator, config.host, config.port);
     defer lsp_socket.close();
 
     const lsp_reader = lsp_socket.reader().any();
