@@ -1,9 +1,15 @@
 const std = @import("std");
 
+const release_targets: []const std.Target.Query = &.{
+    .{ .cpu_arch = .x86_64, .os_tag = .linux },
+    .{ .cpu_arch = .aarch64, .os_tag = .linux },
+};
+const release_optimization = std.builtin.OptimizeMode.ReleaseSafe;
+const exe_name = "godot-wsl-proxy";
 // Although this function looks imperative, note that its job is to
 // declaratively construct a build graph that will be executed by an external
 // runner.
-pub fn build(b: *std.Build) void {
+pub fn build(b: *std.Build) !void {
     // Standard target options allows the person running `zig build` to choose
     // what target to build for. Here we do not override the defaults, which
     // means any target is allowed, and the default is native. Other options
@@ -16,7 +22,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const exe = b.addExecutable(.{
-        .name = "godot-wsl-proxy",
+        .name = exe_name,
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
@@ -63,4 +69,33 @@ pub fn build(b: *std.Build) void {
     // running the unit tests.
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_exe_unit_tests.step);
+
+    // Special step to make application to all the supported platforms
+    const release_step = b.step("release", "Release executables on all the supported envs");
+    for (release_targets) |release_target| {
+        const release_exe = b.addExecutable(.{
+            .name = exe_name,
+            .root_source_file = b.path("src/main.zig"),
+            .target = b.resolveTargetQuery(release_target),
+            .optimize = release_optimization,
+            .linkage = .static,
+        });
+        const install_dir = try release_target.zigTriple(b.allocator);
+        const target_output = b.addInstallArtifact(release_exe, .{
+            .dest_dir = .{
+                .override = .{
+                    .custom = install_dir,
+                },
+            },
+        });
+        const tar_gz_tool = b.addSystemCommand(&.{"tar"});
+        tar_gz_tool.addArg("-czf");
+        const archive_name = b.getInstallPath(target_output.dest_dir.?, try std.fmt.allocPrint(b.allocator, "{s}-{s}.tar.gz", .{ exe_name, install_dir }));
+        tar_gz_tool.addArg(archive_name);
+        tar_gz_tool.addArg("-C");
+        tar_gz_tool.addArg(b.getInstallPath(target_output.dest_dir.?, ""));
+        tar_gz_tool.addArg(exe_name);
+        tar_gz_tool.step.dependOn(&target_output.step);
+        release_step.dependOn(&tar_gz_tool.step);
+    }
 }
