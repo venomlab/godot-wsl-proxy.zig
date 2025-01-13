@@ -10,6 +10,7 @@ const config = struct {
 const Errors = error{
     NoContentLength,
     ReadBroken,
+    PollingError,
 };
 
 const ByteArrayList = std.ArrayList(u8);
@@ -74,40 +75,57 @@ pub fn main() !void {
     const lsp_reader = lsp_socket.reader().any();
     const lsp_writer = lsp_socket.writer().any();
 
-    request_cycle: while (true) {
-        std.log.info("ATTEMPT TO RECEIVE CLIENT MESSAGE", .{});
-        const clientReqOpt = try readRequest(allocator, client_reader);
-        if (clientReqOpt != null) {
-            var request: Request = clientReqOpt.?;
-            request.log("CLIENT RAW REQUEST");
-            if (request.data) |data| {
-                const new_data = try convertLinuxToWindows(allocator, data);
-                try request.setNewData(new_data);
-            }
-            request.log("SENDING TO LSP");
-            try writeRequest(request, lsp_writer);
-            request.deinit();
-        } else {
-            std.log.warn("Cannot receive request from client\n", .{});
-            break :request_cycle;
+    const pfd_client = std.posix.pollfd{ .fd = std.io.getStdIn().handle, .events = std.posix.POLL.IN, .revents = undefined };
+    const pfd_lsp = std.posix.pollfd{ .fd = lsp_socket.handle, .events = std.posix.POLL.IN, .revents = undefined };
+    var fds = ([_]std.posix.pollfd{ pfd_lsp, pfd_client });
+    while (true) {
+        const res = try std.posix.poll(&fds, 1000);
+        if (res < 0) {
+            std.log.err("Something went wrong\n", .{});
+            return Errors.PollingError;
         }
-
-        std.log.info("ATTEMPT TO RECEIVE LSP MESSAGE", .{});
-        const lspResponseOpt = try readRequest(allocator, lsp_reader);
-        if (lspResponseOpt != null) {
-            var request: Request = lspResponseOpt.?;
-            request.log("LSP RAW RESPONSE");
-            if (request.data) |data| {
-                const new_data = try convertWindowsToLinux(allocator, data);
-                try request.setNewData(new_data);
+        if (res > 0) {
+            if (fds[0].revents > 0) {
+                // LSP ready to send response
+                std.log.info("ATTEMPT TO RECEIVE LSP MESSAGE", .{});
+                const lspResponseOpt = try readRequest(allocator, lsp_reader);
+                if (lspResponseOpt != null) {
+                    var request: Request = lspResponseOpt.?;
+                    request.log("LSP RAW RESPONSE");
+                    if (request.data) |data| {
+                        const new_data = try convertWindowsToLinux(allocator, data);
+                        try request.setNewData(new_data);
+                    }
+                    request.log("SENDING TO CLIENT");
+                    try writeRequest(request, client_writer);
+                    request.deinit();
+                } else {
+                    std.log.warn("Cannot receive response from LSP\n", .{});
+                    break;
+                }
             }
-            request.log("SENDING TO CLIENT");
-            try writeRequest(request, client_writer);
-            request.deinit();
-        } else {
-            std.log.warn("Cannot receive response from LSP\n", .{});
-            break :request_cycle;
+            if (fds[1].revents > 0) {
+                // Client ready to send request
+                std.log.info("ATTEMPT TO RECEIVE CLIENT MESSAGE", .{});
+                const clientReqOpt = try readRequest(allocator, client_reader);
+                if (clientReqOpt != null) {
+                    var request: Request = clientReqOpt.?;
+                    request.log("CLIENT RAW REQUEST");
+                    if (request.data) |data| {
+                        const new_data = try convertLinuxToWindows(allocator, data);
+                        try request.setNewData(new_data);
+                    }
+                    request.log("SENDING TO LSP");
+                    try writeRequest(request, lsp_writer);
+                    request.deinit();
+                } else {
+                    std.log.warn("Cannot receive request from client\n", .{});
+                    break;
+                }
+            }
         }
+        fds[0].revents = 0;
+        fds[1].revents = 0;
     }
 }
 
