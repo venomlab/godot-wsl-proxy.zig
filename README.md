@@ -10,7 +10,36 @@ This project is inspired by [godot-wsl-lsp](https://github.com/lucasecdb/godot-w
 
 # Installation
 
-Currently, there is only one way.
+## With Pre-Built Binaries
+
+Download the binary distributtion and SHA256 checksum
+
+```shell
+wget "https://github.com/venomlab/godot-wsl-proxy/releases/download/latest/godot-wsl-proxy-$(uname -m)-$(uname -s | tr '[:upper:]' '[:lower:]').tar.gz"
+wget https://github.com/venomlab/godot-wsl-proxy/releases/download/latest/godot-wsl-proxy-$(uname -m)-$(uname -s | tr '[:upper:]' '[:lower:]').tar.gz.sha256
+```
+
+Validate the checksum
+
+```shell
+sha256sum -c "godot-wsl-proxy-$(uname -m)-$(uname -s | tr '[:upper:]' '[:lower:]').tar.gz.sha256"
+```
+
+You should receive `OK` output from sha256 command
+
+Then unpack the `.tar.gz` archive
+
+```shell
+tar -xvf "godot-wsl-proxy-$(uname -m)-$(uname -s | tr '[:upper:]' '[:lower:]').tar.gz"
+```
+
+And now - install it somewhere within `PATH`. For example, `~/.local/bin/`
+
+```shell
+install godot-wsl-proxy ~/.local/bin/
+```
+
+## From Source Code
 
 First, pull the repo
 
@@ -18,9 +47,7 @@ First, pull the repo
 git clone https://github.com/venomlab/godot-wsl-proxy.zig godot-wsl-proxy
 ```
 
-
 Go inside a folder and compile it in a release mode
-
 
 ```shell
 cd godot-wsl-proxy
@@ -32,10 +59,6 @@ Then install it into your `.local/bin`
 ```shell
 install zig-out/bin/godot-wsl-proxy ~/.local/bin -v
 ```
-
-Later I'm going to do binary release, so, you can just download it and use already
-
-Also, in future I plan to add this to Mason (for Neovim users)
 
 # Neovim LSP Config
 
@@ -54,3 +77,4 @@ else
 end
 ```
 
+In future I may add this to Mason
