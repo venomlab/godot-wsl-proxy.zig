@@ -1,6 +1,6 @@
 const std = @import("std");
 pub const std_options = .{
-    .log_level = .info,
+    .log_level = .warn,
 };
 
 const config = struct {
