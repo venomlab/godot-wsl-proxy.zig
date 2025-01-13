@@ -12,7 +12,7 @@ This project is inspired by [godot-wsl-lsp](https://github.com/lucasecdb/godot-w
 
 Currently, there is only one way.
 
-first, pull the repo
+First, pull the repo
 
 ```shell
 git clone https://github.com/venomlab/godot-wsl-proxy.zig godot-wsl-proxy
